@@ -779,6 +779,7 @@ const favState = {
   save() {
     localStorage.setItem(FAV_KEY, JSON.stringify(this._map));
     localStorage.setItem(FAV_ORDER_KEY, JSON.stringify(this.emojis));
+    if (typeof scheduleAutoSync === 'function') scheduleAutoSync();
   },
 
   has(em) { return (this._map[em] ?? 0) > 0; },
@@ -1179,9 +1180,10 @@ document.getElementById('sync-btn').innerHTML = SVG_SYNC;
 document.getElementById('sync-token-eye').innerHTML = SVG_EYE;
 
 // ── Gist sync ────────────────────────────────────────────────────────────────
-const GIST_KEY      = 'emoji-picker-gist-token';
-const GIST_ID_KEY   = 'emoji-picker-gist-id';
-const GIST_FILENAME = 'emoji-picker-favs.json';
+const GIST_KEY        = 'emoji-picker-gist-token';
+const GIST_ID_KEY     = 'emoji-picker-gist-id';
+const GIST_SYNCED_KEY = 'emoji-picker-ever-synced'; // флаг: браузер уже синхронизировался хотя бы раз
+const GIST_FILENAME   = 'emoji-picker-favs.json';
 
 const syncBtn      = document.getElementById('sync-btn');
 const syncOverlay  = document.getElementById('sync-overlay');
@@ -1296,9 +1298,26 @@ async function syncFavs() {
           }
 
           if (remoteMap) {
-            // ── Tombstone merge: for each emoji, latest |timestamp| wins ──
-            // positive ts = active, negative ts = intentionally deleted
-            const mergedMap = favState.mergeWith(remoteMap);
+            const everSynced = !!localStorage.getItem(GIST_SYNCED_KEY);
+
+            let mergedMap;
+            if (!everSynced) {
+              // ── Новый браузер: локальные tombstone'ы не несут смысла ──
+              // Локальные «отсутствия» — это просто «ещё не добавлено», а не удаления.
+              // Поэтому берём объединение: всё активное из облака + всё активное локально.
+              mergedMap = { ...remoteMap };
+              Object.entries(favState._map).forEach(([em, ts]) => {
+                if (ts > 0) {
+                  // Локально активный: добавляем, если в облаке нет или там tombstone старее
+                  const remoteTs = mergedMap[em] ?? 0;
+                  if (ts > Math.abs(remoteTs)) mergedMap[em] = ts;
+                }
+                // Локальный tombstone в новом браузере — игнорируем
+              });
+            } else {
+              // ── Известный браузер: tombstone merge, последнее действие побеждает ──
+              mergedMap = favState.mergeWith(remoteMap);
+            }
             favState._map = mergedMap;
             favState._order = null;
             favState.save();
@@ -1308,6 +1327,7 @@ async function syncFavs() {
             const activeCount = favState.emojis.length;
             const content = JSON.stringify({ tombstoneMap: mergedMap }, null, 2);
             await gistRequest('PATCH', '/gists/' + gistId, { files: { [GIST_FILENAME]: { content } } });
+            localStorage.setItem(GIST_SYNCED_KEY, '1');
             setSyncStatus('✓ Синхронизировано (' + activeCount + ' эмодзи)', 'ok');
             return;
           }
@@ -1330,6 +1350,7 @@ async function syncFavs() {
       localStorage.setItem(GIST_ID_KEY, created.id);
     }
     setSyncStatus('✓ Сохранено в облако (' + favState.emojis.length + ' эмодзи)', 'ok');
+    localStorage.setItem(GIST_SYNCED_KEY, '1');
 
   } catch (e) {
     setSyncStatus('Ошибка: ' + e.message, 'err');
@@ -1340,6 +1361,21 @@ async function syncFavs() {
 }
 
 syncDoBtn.addEventListener('click', syncFavs);
+
+// ── Авто-синхронизация ────────────────────────────────────────────────────────
+// Запускается автоматически после каждого изменения избранного,
+// если токен введён и браузер уже синхронизировался хотя бы раз.
+let autoSyncTimer = null;
+function scheduleAutoSync() {
+  const token = localStorage.getItem(GIST_KEY);
+  const everSynced = localStorage.getItem(GIST_SYNCED_KEY);
+  if (!token || !everSynced) return;
+  clearTimeout(autoSyncTimer);
+  autoSyncTimer = setTimeout(() => {
+    // Тихая синхронизация: не открываем модалку, просто крутим иконку
+    syncFavs();
+  }, 1500);
+}
 </script>
 </body>
 </html>
