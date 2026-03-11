@@ -800,7 +800,6 @@ const favState = {
   save() {
     localStorage.setItem(FAV_KEY, JSON.stringify(this._map));
     localStorage.setItem(FAV_ORDER_KEY, JSON.stringify(this.emojis));
-    if (typeof scheduleAutoSync === 'function') scheduleAutoSync();
   },
 
   has(em) { return (this._map[em] ?? 0) > 0; },
@@ -808,19 +807,20 @@ const favState = {
   add(em) {
     if (!this.has(em)) {
       this._map[em] = Date.now();
-      // Prepend to order
       const ord = this.emojis;
       ord.unshift(em);
       this._order = ord;
       this.save();
+      scheduleAutoSync();
     }
   },
 
   remove(em) {
     if (this.has(em)) {
-      this._map[em] = -Date.now(); // tombstone
-      this._order = this.emojis;  // recompute without deleted
+      this._map[em] = -Date.now();
+      this._order = this.emojis;
       this.save();
+      scheduleAutoSync();
     }
   },
 
@@ -833,6 +833,7 @@ const favState = {
     ord.splice(toIdx, 0, item);
     this._order = ord;
     this.save();
+    scheduleAutoSync();
   },
 
   // Merge two tombstone maps: for each emoji, keep the entry with the latest |timestamp|
@@ -1377,7 +1378,18 @@ async function syncFavs() {
     setSyncStatus('Ошибка: ' + e.message, 'err');
   } finally {
     syncDoBtn.disabled = false;
-    syncBtn.classList.remove('syncing');
+    // Ждём конца текущего оборота (800ms = длительность одного spin-ccw),
+    // чтобы иконка всегда останавливалась в исходном положении.
+    const svgEl = syncBtn.querySelector('svg');
+    if (svgEl && syncBtn.classList.contains('syncing')) {
+      const SPIN_DURATION = 800;
+      const now = performance.now();
+      const elapsed = now % SPIN_DURATION;
+      const remaining = elapsed < 10 ? 0 : SPIN_DURATION - elapsed;
+      setTimeout(() => syncBtn.classList.remove('syncing'), remaining);
+    } else {
+      syncBtn.classList.remove('syncing');
+    }
   }
 }
 
