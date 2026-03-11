@@ -155,7 +155,6 @@
     font-size: var(--emoji-size);
     cursor: pointer;
     border-radius: 8px;
-    user-select: none;
     line-height: 1;
   }
   .emoji-cell:hover { background: rgb(39, 131, 222); }
@@ -1062,6 +1061,7 @@ function makeCell(emoji, isFav, grid) {
   });
 
   if (isFav) {
+    cell.style.userSelect = 'none';
     // Pointer drag to reorder
     cell.addEventListener('mousedown', e => {
       if (e.button !== 0) return;
