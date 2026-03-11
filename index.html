@@ -603,8 +603,7 @@
   </div>
   <div id="sync-token-hint">Нужны права <b>gist</b>. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Emoji+Picker+Sync" target="_blank">Создать токен →</a></div>
   <div id="sync-actions">
-    <button class="sync-action-btn" id="sync-pull-btn">⬆️  Загрузить</button>
-    <button class="sync-action-btn primary" id="sync-push-btn">💾 Сохранить</button>
+    <button class="sync-action-btn primary" id="sync-do-btn">🔄 Синхронизировать</button>
   </div>
   <div id="sync-status"></div>
   <button id="sync-close-btn">Закрыть</button>
@@ -1045,8 +1044,7 @@ const syncModal    = document.getElementById('sync-modal');
 const syncInput    = document.getElementById('sync-token-input');
 const syncEyeBtn   = document.getElementById('sync-token-eye');
 const syncStatus   = document.getElementById('sync-status');
-const syncPushBtn  = document.getElementById('sync-push-btn');
-const syncPullBtn  = document.getElementById('sync-pull-btn');
+const syncDoBtn    = document.getElementById('sync-do-btn');
 const syncCloseBtn = document.getElementById('sync-close-btn');
 
 // Load saved token
@@ -1108,9 +1106,9 @@ async function gistRequest(method, path, body) {
   return res.json();
 }
 
-async function pushFavs() {
-  setSyncStatus('Сохраняю…');
-  syncPushBtn.disabled = syncPullBtn.disabled = true;
+async function syncFavs() {
+  setSyncStatus('Синхронизирую…');
+  syncDoBtn.disabled = true;
   syncBtn.classList.add('syncing');
   try {
     const content = JSON.stringify({ favEmojis: favState.emojis }, null, 2);
@@ -1126,59 +1124,53 @@ async function pushFavs() {
       }
     }
     if (!gistId) {
-      const data = await gistRequest('POST', '/gists', {
-        description: 'Emoji Picker — избранное',
-        public: false,
-        files: fileObj
-      });
-      if (!data) return;
-      gistId = data.id;
-      localStorage.setItem(GIST_ID_KEY, gistId);
-    }
-    setSyncStatus('✓ Сохранено', 'ok');
-  } catch (e) {
-    setSyncStatus('Ошибка: ' + e.message, 'err');
-  } finally {
-    syncPushBtn.disabled = syncPullBtn.disabled = false;
-    syncBtn.classList.remove('syncing');
-  }
-}
-
-async function pullFavs() {
-  setSyncStatus('Загружаю…');
-  syncPushBtn.disabled = syncPullBtn.disabled = true;
-  syncBtn.classList.add('syncing');
-  try {
-    let gistId = localStorage.getItem(GIST_ID_KEY);
-    if (!gistId) {
-      // Search for our gist by filename
+      // Search for existing gist by filename before creating new
       const list = await gistRequest('GET', '/gists?per_page=100');
       if (!list) return;
       const found = list.find(g => g.files && g.files[GIST_FILENAME]);
-      if (!found) { setSyncStatus('Гист не найден. Сначала сохрани.', 'err'); return; }
-      gistId = found.id;
-      localStorage.setItem(GIST_ID_KEY, gistId);
+      if (found) {
+        gistId = found.id;
+        localStorage.setItem(GIST_ID_KEY, gistId);
+        // Pull from found gist instead of overwriting
+        const data = await gistRequest('GET', '/gists/' + gistId);
+        if (!data) return;
+        const raw = data.files?.[GIST_FILENAME]?.content;
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed.favEmojis)) {
+            // Merge: combine remote + local, deduplicate, preserve local order
+            const merged = [...new Set([...parsed.favEmojis, ...favState.emojis])];
+            favState.emojis = merged;
+            favState.save();
+            // Now push merged back
+            const mergedContent = JSON.stringify({ favEmojis: merged }, null, 2);
+            await gistRequest('PATCH', '/gists/' + gistId, { files: { [GIST_FILENAME]: { content: mergedContent } } });
+            rebuild();
+            setSyncStatus('✓ Синхронизировано (' + merged.length + ' эмодзи)', 'ok');
+            return;
+          }
+        }
+      } else {
+        const data = await gistRequest('POST', '/gists', {
+          description: 'Emoji Picker — избранное',
+          public: false,
+          files: fileObj
+        });
+        if (!data) return;
+        gistId = data.id;
+        localStorage.setItem(GIST_ID_KEY, gistId);
+      }
     }
-    const data = await gistRequest('GET', '/gists/' + gistId);
-    if (!data) return;
-    const raw = data.files?.[GIST_FILENAME]?.content;
-    if (!raw) { setSyncStatus('Файл не найден в гисте', 'err'); return; }
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed.favEmojis)) throw new Error('Неверный формат');
-    favState.emojis = parsed.favEmojis;
-    favState.save();
-    rebuild();
-    setSyncStatus('✓ Загружено (' + favState.emojis.length + ' эмодзи)', 'ok');
+    setSyncStatus('✓ Синхронизировано', 'ok');
   } catch (e) {
     setSyncStatus('Ошибка: ' + e.message, 'err');
   } finally {
-    syncPushBtn.disabled = syncPullBtn.disabled = false;
+    syncDoBtn.disabled = false;
     syncBtn.classList.remove('syncing');
   }
 }
 
-syncPushBtn.addEventListener('click', pushFavs);
-syncPullBtn.addEventListener('click', pullFavs);
+syncDoBtn.addEventListener('click', syncFavs);
 </script>
 </body>
 </html>
