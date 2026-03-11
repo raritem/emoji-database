@@ -1385,15 +1385,13 @@ async function syncFavs() {
     }
   } finally {
     syncDoBtn.disabled = false;
-    // Ждём конца текущего оборота (800ms = длительность одного spin-ccw),
-    // чтобы иконка всегда останавливалась в исходном положении.
+    // Снимаем класс ровно на границе оборота — через событие animationiteration,
+    // которое браузер стреляет в конце каждого полного круга.
     const svgEl = syncBtn.querySelector('svg');
     if (svgEl && syncBtn.classList.contains('syncing')) {
-      const SPIN_DURATION = 800;
-      const now = performance.now();
-      const elapsed = now % SPIN_DURATION;
-      const remaining = elapsed < 10 ? 0 : SPIN_DURATION - elapsed;
-      setTimeout(() => syncBtn.classList.remove('syncing'), remaining);
+      svgEl.addEventListener('animationiteration', () => {
+        syncBtn.classList.remove('syncing');
+      }, { once: true });
     } else {
       syncBtn.classList.remove('syncing');
     }
