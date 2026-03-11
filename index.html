@@ -559,10 +559,18 @@
 
   #sync-status {
     font-size: 12px;
-    min-height: 18px;
     color: #888888;
-    margin-bottom: 12px;
     text-align: center;
+    overflow: hidden;
+    max-height: 0;
+    margin-bottom: 0;
+    opacity: 0;
+    transition: max-height 0.2s ease, margin-bottom 0.2s ease, opacity 0.2s ease;
+  }
+  #sync-status.visible {
+    max-height: 40px;
+    margin-bottom: 10px;
+    opacity: 1;
   }
   #sync-status.ok  { color: #4caf50; }
   #sync-status.err { color: #e53935; }
@@ -673,10 +681,10 @@
     <button id="sync-token-eye" tabindex="-1" title="Показать/скрыть токен"></button>
   </div>
   <div id="sync-token-hint">Нужны права <b>gist</b>. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Emoji+Picker+Sync" target="_blank">Создать токен →</a></div>
+  <div id="sync-status"></div>
   <div id="sync-actions">
     <button class="sync-action-btn primary" id="sync-do-btn">🔄 Синхронизировать</button>
   </div>
-  <div id="sync-status"></div>
 </div>
 
 <main id="main"></main>
@@ -1259,6 +1267,7 @@ syncEyeBtn.addEventListener('click', () => {
 function setSyncStatus(msg, type = '') {
   syncStatus.textContent = msg;
   syncStatus.className = type;
+  syncStatus.classList.toggle('visible', msg.length > 0);
 }
 
 function hideConflict() { /* conflict UI removed — merge is automatic */ }
@@ -1408,12 +1417,10 @@ async function syncFavs() {
     localStorage.setItem(GIST_SYNCED_KEY, '1');
 
   } catch (e) {
-    if (e.status === 403 && e.message.includes('rate limit')) {
-      setSyncStatus('⏳ Rate limit — повтор через 60 сек', 'err');
-      scheduleAutoSync(60_000);
-    } else {
+    if (!e.status || e.status !== 403 || !e.message.includes('rate limit')) {
       setSyncStatus('Ошибка: ' + e.message, 'err');
     }
+    // rate limit — молча игнорируем, синхронизация произойдёт при следующем изменении или открытии
   } finally {
     syncDoBtn.disabled = false;
     // Снимаем класс ровно на границе оборота — через событие animationiteration,
@@ -1432,10 +1439,8 @@ async function syncFavs() {
 syncDoBtn.addEventListener('click', syncFavs);
 
 // ── Авто-синхронизация ────────────────────────────────────────────────────────
-// Запускается автоматически после каждого изменения избранного,
-// если токен введён и браузер уже синхронизировался хотя бы раз.
-// delay по умолчанию 5 сек; при rate limit передаём 60 сек.
 let autoSyncTimer = null;
+
 function scheduleAutoSync(delay = 5000) {
   const token = localStorage.getItem(GIST_KEY);
   const everSynced = localStorage.getItem(GIST_SYNCED_KEY);
