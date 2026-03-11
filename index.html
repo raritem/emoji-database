@@ -895,18 +895,38 @@ let allNavCats = [];   // array of {name, isFav}
 let categoryEls = [];  // DOM sections in order
 
 function buildNav() {
+  // Запоминаем текущий активный индекс до пересборки
+  const prevActiveIdx = navRows.findIndex(r => r.classList.contains('active'));
+  const prevCats = [...allNavCats];
+
   // Remove old nav rows (keep #nav-card)
   navRows.forEach(r => r.remove());
   navRows.length = 0;
 
+  const hadFav = prevCats.length > 0 && prevCats[0].isFav;
   allNavCats = [
     ...(favState.emojis.length > 0 ? [{ name: 'Избранное', isFav: true }] : []),
     ...EMOJIS.map(c => ({ name: c.name, isFav: false }))
   ];
+  const hasFav = allNavCats.length > 0 && allNavCats[0].isFav;
+
+  // Пересчитываем активный индекс с учётом появления/исчезновения «Избранного»
+  let targetActiveIdx = 0;
+  if (prevActiveIdx >= 0) {
+    if (!hadFav && hasFav) {
+      // Избранное появилось — все индексы сдвинулись на +1
+      targetActiveIdx = prevActiveIdx + 1;
+    } else if (hadFav && !hasFav) {
+      // Избранное исчезло — сдвиг на -1, но не ниже 0
+      targetActiveIdx = Math.max(0, prevActiveIdx - 1);
+    } else {
+      targetActiveIdx = prevActiveIdx;
+    }
+  }
 
   allNavCats.forEach((cat, i) => {
     const row = document.createElement('div');
-    row.className = 'nav-row' + (i === 0 ? ' active' : '');
+    row.className = 'nav-row' + (i === targetActiveIdx ? ' active' : '');
 
     const label = document.createElement('div');
     label.className = 'nav-label';
