@@ -1171,6 +1171,13 @@ function rebuild() {
 // Initial render
 rebuild();
 
+// Синхронизация при загрузке страницы (если токен есть и браузер уже синхронизировался)
+window.addEventListener('load', () => {
+  const token = localStorage.getItem(GIST_KEY);
+  const everSynced = localStorage.getItem(GIST_SYNCED_KEY);
+  if (token && everSynced) syncFavs();
+});
+
 // ── Toast ─────────────────────────────────────────────────────────────────────
 let toastTimer;
 const toast = document.getElementById('toast');
@@ -1329,30 +1336,51 @@ async function syncFavs() {
 
             let mergedMap;
             if (!everSynced) {
-              // ── Новый браузер: локальные tombstone'ы не несут смысла ──
-              // Локальные «отсутствия» — это просто «ещё не добавлено», а не удаления.
-              // Поэтому берём объединение: всё активное из облака + всё активное локально.
               mergedMap = { ...remoteMap };
               Object.entries(favState._map).forEach(([em, ts]) => {
                 if (ts > 0) {
-                  // Локально активный: добавляем, если в облаке нет или там tombstone старее
                   const remoteTs = mergedMap[em] ?? 0;
                   if (ts > Math.abs(remoteTs)) mergedMap[em] = ts;
                 }
-                // Локальный tombstone в новом браузере — игнорируем
               });
             } else {
-              // ── Известный браузер: tombstone merge, последнее действие побеждает ──
               mergedMap = favState.mergeWith(remoteMap);
             }
-            favState._map = mergedMap;
-            favState._order = null;
+
+            // ── Восстанавливаем порядок ──────────────────────────────────────
+            // Берём текущий локальный порядок как основу, затем добавляем
+            // в конец эмодзи которые есть в облаке но отсутствуют локально.
+            const remoteOrder = Array.isArray(parsed.order) ? parsed.order : [];
+            const localOrder  = favState.emojis; // текущий порядок до merge
+            const activeInMerge = new Set(
+              Object.entries(mergedMap).filter(([,v]) => v > 0).map(([k]) => k)
+            );
+            // Начинаем с локального порядка (фильтруем удалённые)
+            const seen = new Set();
+            const mergedOrder = localOrder.filter(em => {
+              if (!activeInMerge.has(em) || seen.has(em)) return false;
+              seen.add(em); return true;
+            });
+            // Дописываем в конец то что пришло из облака и ещё не в списке
+            remoteOrder.forEach(em => {
+              if (activeInMerge.has(em) && !seen.has(em)) {
+                mergedOrder.push(em);
+                seen.add(em);
+              }
+            });
+            // Всё остальное активное (ни там ни там в order) — в конец
+            activeInMerge.forEach(em => {
+              if (!seen.has(em)) mergedOrder.push(em);
+            });
+
+            favState._map   = mergedMap;
+            favState._order = mergedOrder;
             favState.save();
             rebuild();
 
             // Push merged state back to cloud
             const activeCount = favState.emojis.length;
-            const content = JSON.stringify({ tombstoneMap: mergedMap }, null, 2);
+            const content = JSON.stringify({ tombstoneMap: mergedMap, order: mergedOrder }, null, 2);
             await gistRequest('PATCH', '/gists/' + gistId, { files: { [GIST_FILENAME]: { content } } });
             localStorage.setItem(GIST_SYNCED_KEY, '1');
             setSyncStatus('✓ Синхронизировано (' + activeCount + ' эмодзи)', 'ok');
@@ -1363,7 +1391,7 @@ async function syncFavs() {
     }
 
     // No remote data yet — push local tombstone map
-    const content = JSON.stringify({ tombstoneMap: favState._map }, null, 2);
+    const content = JSON.stringify({ tombstoneMap: favState._map, order: favState.emojis }, null, 2);
     const fileObj = { [GIST_FILENAME]: { content } };
     if (gistId) {
       await gistRequest('PATCH', '/gists/' + gistId, { files: fileObj });
