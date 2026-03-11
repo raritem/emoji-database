@@ -450,7 +450,7 @@
     opacity: 0;
   }
   body.dark #sync-modal {
-    background: #222222;
+    background: #1b1b1b;
     border-color: #333333;
     box-shadow: 0 8px 40px rgba(0,0,0,0.5);
   }
@@ -565,7 +565,7 @@
 
   #sync-close-btn {
     width: 100%;
-    height: 33px;
+    height: 34px;
     background: none;
     border: 1px solid #e0e0e0;
     border-radius: 8px;
@@ -581,7 +581,7 @@
   /* Conflict panel */
   #sync-conflict {
     display: none;
-    margin-bottom: 12px;
+    margin-bottom: 20px;
     border: 1px solid #e0e0e0;
     border-radius: 10px;
     overflow: hidden;
@@ -602,8 +602,8 @@
   #sync-conflict-counts {
     font-size: 12px;
     color: #666;
-    padding: 8px 12px 6px;
-    line-height: 1.6;
+    padding: 10px 12px 10px;
+    line-height: 2;
   }
   body.dark #sync-conflict-counts { color: #888; }
   #sync-conflict-counts b { color: #1a1a1a; }
@@ -666,15 +666,6 @@
     <button class="sync-action-btn primary" id="sync-do-btn">🔄 Синхронизировать</button>
   </div>
   <div id="sync-status"></div>
-  <div id="sync-conflict">
-    <div id="sync-conflict-title">⚠️ Выберите тип синхронизации</div>
-    <div id="sync-conflict-counts"></div>
-    <div id="sync-conflict-btns">
-      <button class="conflict-btn primary" id="conflict-merge-btn">🔀 Объединить</button>
-      <button class="conflict-btn" id="conflict-gist-btn">☁️ Заменить из облака</button>
-      <button class="conflict-btn" id="conflict-local-btn">💾 Перезаписать в облаке</button>
-    </div>
-  </div>
   <button id="sync-close-btn">Закрыть</button>
 </div>
 
@@ -732,19 +723,104 @@ document.querySelectorAll('.size-btn').forEach(btn => {
 });
 
 // ── Favourites state ─────────────────────────────────────────────────────────
-const FAV_KEY = 'emoji-picker-favs';
+// Storage format (tombstone):
+//   { "😂": 1700000500, "🔥": -1700001000 }
+//   positive timestamp  = active favourite (added at that time)
+//   negative timestamp  = intentionally deleted (tombstone)
+//   order array stored separately so drag-reorder works without touching timestamps
+const FAV_KEY       = 'emoji-picker-favs';       // tombstone map
+const FAV_ORDER_KEY = 'emoji-picker-favs-order';  // ordered array of active emojis
+
+function loadTombstoneMap() {
+  try {
+    const raw = localStorage.getItem(FAV_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    // Migration: if old format (plain array), convert to tombstone map
+    if (Array.isArray(parsed)) {
+      const now = Date.now();
+      const map = {};
+      parsed.forEach(em => { map[em] = now; });
+      return map;
+    }
+    return parsed;
+  } catch { return {}; }
+}
+
 const favState = {
-  emojis: JSON.parse(localStorage.getItem(FAV_KEY) || '[]'),
-  save() { localStorage.setItem(FAV_KEY, JSON.stringify(this.emojis)); },
-  has(em) { return this.emojis.includes(em); },
-  add(em) { if (!this.has(em)) { this.emojis.unshift(em); this.save(); } },
-  remove(em) { this.emojis = this.emojis.filter(e => e !== em); this.save(); },
+  _map: loadTombstoneMap(),   // { emoji: timestamp }  positive=active, negative=deleted
+  _order: JSON.parse(localStorage.getItem(FAV_ORDER_KEY) || 'null'),
+
+  // Active list derived from map (in display order)
+  get emojis() {
+    const active = new Set(Object.entries(this._map).filter(([,v]) => v > 0).map(([k]) => k));
+    if (this._order) {
+      const ordered = this._order.filter(em => active.has(em));
+      // Append any newly added emojis not yet in order list
+      active.forEach(em => { if (!ordered.includes(em)) ordered.unshift(em); });
+      return ordered;
+    }
+    return [...active];
+  },
+
+  // Setter used by legacy sync code (applyResolution) — accepts plain array
+  set emojis(arr) {
+    const now = Date.now();
+    // Mark everything currently active as deleted
+    Object.keys(this._map).forEach(em => {
+      if (this._map[em] > 0) this._map[em] = -Math.abs(this._map[em]);
+    });
+    // Add all items from new array
+    arr.forEach(em => { this._map[em] = now; });
+    this._order = [...arr];
+    this.save();
+  },
+
+  save() {
+    localStorage.setItem(FAV_KEY, JSON.stringify(this._map));
+    localStorage.setItem(FAV_ORDER_KEY, JSON.stringify(this.emojis));
+  },
+
+  has(em) { return (this._map[em] ?? 0) > 0; },
+
+  add(em) {
+    if (!this.has(em)) {
+      this._map[em] = Date.now();
+      // Prepend to order
+      const ord = this.emojis;
+      ord.unshift(em);
+      this._order = ord;
+      this.save();
+    }
+  },
+
+  remove(em) {
+    if (this.has(em)) {
+      this._map[em] = -Date.now(); // tombstone
+      this._order = this.emojis;  // recompute without deleted
+      this.save();
+    }
+  },
+
   toggle(em) { this.has(em) ? this.remove(em) : this.add(em); },
+
   move(fromIdx, toIdx) {
     if (fromIdx === toIdx) return;
-    const [item] = this.emojis.splice(fromIdx, 1);
-    this.emojis.splice(toIdx, 0, item);
+    const ord = this.emojis;
+    const [item] = ord.splice(fromIdx, 1);
+    ord.splice(toIdx, 0, item);
+    this._order = ord;
     this.save();
+  },
+
+  // Merge two tombstone maps: for each emoji, keep the entry with the latest |timestamp|
+  mergeWith(remoteMap) {
+    const result = { ...this._map };
+    Object.entries(remoteMap).forEach(([em, ts]) => {
+      const localTs  = result[em] ?? 0;
+      if (Math.abs(ts) > Math.abs(localTs)) result[em] = ts;
+    });
+    return result;
   }
 };
 
@@ -1184,43 +1260,7 @@ async function gistRequest(method, path, body) {
   return res.json();
 }
 
-// Pending conflict state
-let pendingRemote = null;
-
-async function applyResolution(resolved) {
-  hideConflict();
-  setSyncStatus('Сохраняю…');
-  syncDoBtn.disabled = true;
-  syncBtn.classList.add('syncing');
-  try {
-    const gistId = localStorage.getItem(GIST_ID_KEY);
-    const content = JSON.stringify({ favEmojis: resolved }, null, 2);
-    await gistRequest('PATCH', '/gists/' + gistId, { files: { [GIST_FILENAME]: { content } } });
-    favState.emojis = resolved;
-    favState.save();
-    rebuild();
-    setSyncStatus('✓ Готово (' + resolved.length + ' эмодзи)', 'ok');
-  } catch (e) {
-    setSyncStatus('Ошибка: ' + e.message, 'err');
-  } finally {
-    syncDoBtn.disabled = false;
-    syncBtn.classList.remove('syncing');
-    pendingRemote = null;
-  }
-}
-
-conflictMergeBtn.addEventListener('click', () => {
-  if (!pendingRemote) return;
-  const merged = [...new Set([...pendingRemote, ...favState.emojis])];
-  applyResolution(merged);
-});
-conflictGistBtn.addEventListener('click', () => {
-  if (!pendingRemote) return;
-  applyResolution([...pendingRemote]);
-});
-conflictLocalBtn.addEventListener('click', () => {
-  applyResolution([...favState.emojis]);
-});
+// Conflict UI removed — tombstone merge is automatic, no user prompt needed
 
 async function syncFavs() {
   hideConflict();
@@ -1242,52 +1282,47 @@ async function syncFavs() {
     }
 
     if (gistId) {
-      // Fetch remote
       let data;
-      try {
-        data = await gistRequest('GET', '/gists/' + gistId);
-      } catch {
-        gistId = null;
-      }
+      try { data = await gistRequest('GET', '/gists/' + gistId); }
+      catch { gistId = null; }
 
       if (data) {
         const raw = data.files?.[GIST_FILENAME]?.content;
         if (raw) {
           const parsed = JSON.parse(raw);
-          const remote = Array.isArray(parsed.favEmojis) ? parsed.favEmojis : [];
-          const local  = favState.emojis;
 
-          // Check for conflict: both sides have emojis and they differ
-          const remoteSet = new Set(remote);
-          const localSet  = new Set(local);
-          const onlyInRemote = remote.filter(e => !localSet.has(e));
-          const onlyInLocal  = local.filter(e => !remoteSet.has(e));
-
-          if (onlyInRemote.length > 0 && onlyInLocal.length > 0) {
-            // Conflict — ask user
-            pendingRemote = remote;
-            syncConflictInfo.innerHTML =
-              `☁️ В облаке: <b>${remote.length}</b> эмодзи (+${onlyInRemote.length} уникальных)<br>` +
-              `💾 Локально: <b>${local.length}</b> эмодзи (+${onlyInLocal.length} уникальных)`;
-            syncConflict.classList.add('open');
-            setSyncStatus('', '');
-            return;
+          // Support both old format (favEmojis array) and new (tombstoneMap)
+          let remoteMap;
+          if (parsed.tombstoneMap && typeof parsed.tombstoneMap === 'object' && !Array.isArray(parsed.tombstoneMap)) {
+            remoteMap = parsed.tombstoneMap;
+          } else if (Array.isArray(parsed.favEmojis)) {
+            // Migrate old format: timestamp=1 so any local tombstone (ts > 1) wins
+            remoteMap = {};
+            parsed.favEmojis.forEach(em => { remoteMap[em] = 1; });
           }
 
-          // No conflict: if only remote has new ones, pull; otherwise push local
-          if (onlyInRemote.length > 0) {
-            favState.emojis = remote;
+          if (remoteMap) {
+            // ── Tombstone merge: for each emoji, latest |timestamp| wins ──
+            // positive ts = active, negative ts = intentionally deleted
+            const mergedMap = favState.mergeWith(remoteMap);
+            favState._map = mergedMap;
+            favState._order = null;
             favState.save();
             rebuild();
-            setSyncStatus('✓ Обновлено из облака (' + remote.length + ' эмодзи)', 'ok');
+
+            // Push merged state back to cloud
+            const activeCount = favState.emojis.length;
+            const content = JSON.stringify({ tombstoneMap: mergedMap }, null, 2);
+            await gistRequest('PATCH', '/gists/' + gistId, { files: { [GIST_FILENAME]: { content } } });
+            setSyncStatus('✓ Синхронизировано (' + activeCount + ' эмодзи)', 'ok');
             return;
           }
         }
       }
     }
 
-    // Push local to gist (create if needed)
-    const content = JSON.stringify({ favEmojis: favState.emojis }, null, 2);
+    // No remote data yet — push local tombstone map
+    const content = JSON.stringify({ tombstoneMap: favState._map }, null, 2);
     const fileObj = { [GIST_FILENAME]: { content } };
     if (gistId) {
       await gistRequest('PATCH', '/gists/' + gistId, { files: fileObj });
