@@ -1412,6 +1412,7 @@ async function syncFavs() {
             const content = JSON.stringify({ tombstoneMap: mergedMap, order: mergedOrder }, null, 2);
             await gistRequest('PATCH', '/gists/' + gistId, { files: { [GIST_FILENAME]: { content } } });
             localStorage.setItem(GIST_SYNCED_KEY, '1');
+            pendingChanges = false;
             setSyncStatus('✓ Синхронизировано (' + activeCount + ' эмодзи)', 'ok');
             return;
           }
@@ -1435,12 +1436,21 @@ async function syncFavs() {
     }
     setSyncStatus('✓ Сохранено в облако (' + favState.emojis.length + ' эмодзи)', 'ok');
     localStorage.setItem(GIST_SYNCED_KEY, '1');
+    pendingChanges = false;
 
   } catch (e) {
     if (!e.status || e.status !== 403 || !e.message.includes('rate limit')) {
       setSyncStatus('Ошибка: ' + e.message, 'err');
     }
-    // rate limit — молча игнорируем, синхронизация произойдёт при следующем изменении или открытии
+    // Если есть несинхронизированные изменения — повторим через 10 сек
+    if (pendingChanges) {
+      const token = localStorage.getItem(GIST_KEY);
+      const everSynced = localStorage.getItem(GIST_SYNCED_KEY);
+      if (token && everSynced) {
+        clearTimeout(autoSyncTimer);
+        autoSyncTimer = setTimeout(() => { if (pendingChanges) syncFavs(); }, 10_000);
+      }
+    }
   } finally {
     syncDoBtn.disabled = false;
     // Снимаем класс ровно на границе оборота — через событие animationiteration,
@@ -1456,17 +1466,45 @@ async function syncFavs() {
   }
 }
 
-syncDoBtn.addEventListener('click', syncFavs);
+syncDoBtn.addEventListener('click', () => {
+  pendingChanges = true;
+  syncFavs();
+});
 
 // ── Авто-синхронизация ────────────────────────────────────────────────────────
-let autoSyncTimer = null;
+// leading + trailing debounce:
+//   - первое изменение запускает sync сразу
+//   - быстрые клики подряд — ждём паузу, потом один финальный sync
+// pendingChanges — флаг что есть несинхронизированные изменения;
+//   снимается только после успешного sync, поэтому ошибка сети не потеряет данные
 
-function scheduleAutoSync(delay = 5000) {
+let autoSyncTimer  = null;
+let isSyncLeading  = true;  // следующий вызов — "leading" (мгновенный)
+let pendingChanges = false;
+
+const DEBOUNCE_WAIT = 3000; // пауза после последнего изменения
+
+function scheduleAutoSync() {
   const token = localStorage.getItem(GIST_KEY);
   const everSynced = localStorage.getItem(GIST_SYNCED_KEY);
   if (!token || !everSynced) return;
+
+  pendingChanges = true;
   clearTimeout(autoSyncTimer);
-  autoSyncTimer = setTimeout(() => syncFavs(), delay);
+
+  if (isSyncLeading) {
+    // Первое изменение — запускаем сразу
+    isSyncLeading = false;
+    syncFavs();
+    // После паузы сбрасываем leading, чтобы следующая "волна" тоже начиналась быстро
+    autoSyncTimer = setTimeout(() => { isSyncLeading = true; }, DEBOUNCE_WAIT);
+  } else {
+    // Идут быстрые изменения — откладываем trailing sync
+    autoSyncTimer = setTimeout(() => {
+      isSyncLeading = true;
+      if (pendingChanges) syncFavs();
+    }, DEBOUNCE_WAIT);
+  }
 }
 </script>
 </body>
