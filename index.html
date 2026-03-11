@@ -1273,7 +1273,9 @@ async function gistRequest(method, path, body) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || res.statusText);
+    const e = new Error(err.message || res.statusText);
+    e.status = res.status;
+    throw e;
   }
   return res.json();
 }
@@ -1375,7 +1377,12 @@ async function syncFavs() {
     localStorage.setItem(GIST_SYNCED_KEY, '1');
 
   } catch (e) {
-    setSyncStatus('Ошибка: ' + e.message, 'err');
+    if (e.status === 403 && e.message.includes('rate limit')) {
+      setSyncStatus('⏳ Rate limit — повтор через 60 сек', 'err');
+      scheduleAutoSync(60_000);
+    } else {
+      setSyncStatus('Ошибка: ' + e.message, 'err');
+    }
   } finally {
     syncDoBtn.disabled = false;
     // Ждём конца текущего оборота (800ms = длительность одного spin-ccw),
@@ -1398,16 +1405,14 @@ syncDoBtn.addEventListener('click', syncFavs);
 // ── Авто-синхронизация ────────────────────────────────────────────────────────
 // Запускается автоматически после каждого изменения избранного,
 // если токен введён и браузер уже синхронизировался хотя бы раз.
+// delay по умолчанию 5 сек; при rate limit передаём 60 сек.
 let autoSyncTimer = null;
-function scheduleAutoSync() {
+function scheduleAutoSync(delay = 5000) {
   const token = localStorage.getItem(GIST_KEY);
   const everSynced = localStorage.getItem(GIST_SYNCED_KEY);
   if (!token || !everSynced) return;
   clearTimeout(autoSyncTimer);
-  autoSyncTimer = setTimeout(() => {
-    // Тихая синхронизация: не открываем модалку, просто крутим иконку
-    syncFavs();
-  }, 1500);
+  autoSyncTimer = setTimeout(() => syncFavs(), delay);
 }
 </script>
 </body>
